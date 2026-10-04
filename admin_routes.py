@@ -2,7 +2,6 @@ from flask import (
     Blueprint,
     render_template,
     request,
-    jsonify,
     session,
     redirect,
     url_for,
@@ -35,7 +34,6 @@ admin_bp = Blueprint(
 # CONFIGURATION
 # ============================================================
 
-# Vercel serverless functions can write only to /tmp
 UPLOAD_FOLDER = "/tmp/uploads"
 
 ALLOWED_EXTENSIONS = {
@@ -50,18 +48,11 @@ ALLOWED_EXTENSIONS = {
 
 def allowed_file(filename):
 
-    if not filename:
-        return False
-
-    if "." not in filename:
-        return False
-
-    extension = filename.rsplit(
-        ".",
-        1
-    )[1].lower()
-
-    return extension in ALLOWED_EXTENSIONS
+    return (
+        "." in filename
+        and filename.rsplit(".", 1)[1].lower()
+        in ALLOWED_EXTENSIONS
+    )
 
 
 # ============================================================
@@ -84,7 +75,7 @@ def admin_required():
 def create_exam():
 
     # --------------------------------------------------------
-    # Check admin
+    # Check admin login
     # --------------------------------------------------------
 
     if not admin_required():
@@ -109,6 +100,14 @@ def create_exam():
 
     try:
 
+        print("====================================")
+        print("CREATE EXAM REQUEST")
+        print("====================================")
+
+        # ----------------------------------------------------
+        # Get form values
+        # ----------------------------------------------------
+
         title = request.form.get(
             "title",
             ""
@@ -119,18 +118,23 @@ def create_exam():
             ""
         ).strip()
 
-        duration_value = request.form.get(
+        duration_text = request.form.get(
             "duration_minutes",
             ""
         ).strip()
 
-        passing_score_value = request.form.get(
+        passing_score_text = request.form.get(
             "passing_score",
             ""
         ).strip()
 
+        print("TITLE:", title)
+        print("DESCRIPTION:", description)
+        print("DURATION:", duration_text)
+        print("PASSING SCORE:", passing_score_text)
+
         # ----------------------------------------------------
-        # Validate title
+        # Validation
         # ----------------------------------------------------
 
         if not title:
@@ -144,11 +148,7 @@ def create_exam():
                 url_for("admin.create_exam")
             )
 
-        # ----------------------------------------------------
-        # Validate duration
-        # ----------------------------------------------------
-
-        if not duration_value:
+        if not duration_text:
 
             flash(
                 "Duration is required.",
@@ -159,10 +159,25 @@ def create_exam():
                 url_for("admin.create_exam")
             )
 
+        if not passing_score_text:
+
+            flash(
+                "Passing score is required.",
+                "error"
+            )
+
+            return redirect(
+                url_for("admin.create_exam")
+            )
+
+        # ----------------------------------------------------
+        # Convert duration
+        # ----------------------------------------------------
+
         try:
 
             duration = int(
-                duration_value
+                duration_text
             )
 
         except ValueError:
@@ -188,24 +203,13 @@ def create_exam():
             )
 
         # ----------------------------------------------------
-        # Validate passing score
+        # Convert passing score
         # ----------------------------------------------------
-
-        if not passing_score_value:
-
-            flash(
-                "Passing score is required.",
-                "error"
-            )
-
-            return redirect(
-                url_for("admin.create_exam")
-            )
 
         try:
 
             passing_score = float(
-                passing_score_value
+                passing_score_text
             )
 
         except ValueError:
@@ -219,10 +223,7 @@ def create_exam():
                 url_for("admin.create_exam")
             )
 
-        if (
-            passing_score < 0
-            or passing_score > 100
-        ):
+        if passing_score < 0 or passing_score > 100:
 
             flash(
                 "Passing score must be between 0 and 100.",
@@ -237,36 +238,36 @@ def create_exam():
         # Database
         # ----------------------------------------------------
 
+        print("Connecting to Supabase...")
+
         db = get_db()
 
-        print("========================================")
-        print("CREATE EXAM")
-        print("Title:", title)
-        print("Duration:", duration)
-        print("Passing Score:", passing_score)
-        print("========================================")
+        print("Supabase connection obtained.")
+
+        # ----------------------------------------------------
+        # Insert exam
+        # ----------------------------------------------------
+
+        exam_data = {
+            "title": title,
+            "description": description,
+            "duration_minutes": duration,
+            "passing_score": passing_score,
+            "is_active": True
+        }
+
+        print("INSERT DATA:")
+        print(exam_data)
 
         response = (
-            db.table("exams")
-            .insert({
-
-                "title": title,
-
-                "description":
-                    description,
-
-                "duration_minutes":
-                    duration,
-
-                "passing_score":
-                    passing_score,
-
-                "is_active":
-                    True
-
-            })
+            db
+            .table("exams")
+            .insert(exam_data)
             .execute()
         )
+
+        print("SUPABASE RESPONSE:")
+        print(response)
 
         # ----------------------------------------------------
         # Check response
@@ -275,7 +276,7 @@ def create_exam():
         if not response.data:
 
             print(
-                "CREATE EXAM: EMPTY DATABASE RESPONSE"
+                "ERROR: Supabase returned no data."
             )
 
             flash(
@@ -287,6 +288,10 @@ def create_exam():
                 url_for("admin.create_exam")
             )
 
+        # ----------------------------------------------------
+        # Get ID
+        # ----------------------------------------------------
+
         exam_id = response.data[0].get(
             "id"
         )
@@ -294,28 +299,33 @@ def create_exam():
         if not exam_id:
 
             print(
-                "CREATE EXAM: ID NOT FOUND"
+                "ERROR: Exam ID was not returned."
             )
 
             flash(
-                "Exam was created but ID was not returned.",
+                "Exam created but ID was not returned.",
                 "error"
             )
 
             return redirect(
-                url_for("admin_dashboard")
+                url_for("admin.create_exam")
             )
 
         print(
-            "Exam created successfully:",
+            "EXAM CREATED:",
             exam_id
         )
+
+        # ----------------------------------------------------
+        # Success
+        # ----------------------------------------------------
 
         flash(
             "Exam created successfully!",
             "success"
         )
 
+        # Go to upload questions
         return redirect(
             url_for(
                 "admin.upload_questions",
@@ -325,13 +335,24 @@ def create_exam():
 
     except Exception as e:
 
-        print("========================================")
-        print("CREATE EXAM ERROR")
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Print complete error in Vercel logs
+        # ----------------------------------------------------
+
+        print("====================================")
+        print("CREATE EXAM FAILED")
+        print("ERROR TYPE:")
+        print(type(e).__name__)
+        print("ERROR:")
+        print(str(e))
+        print("FULL ERROR:")
         print(repr(e))
-        print("========================================")
+        print("====================================")
 
         flash(
-            f"Could not create exam: {str(e)}",
+            "Could not create exam. "
+            "Please check the Vercel logs.",
             "error"
         )
 
@@ -349,10 +370,6 @@ def create_exam():
     methods=["GET", "POST"]
 )
 def upload_questions(exam_id):
-
-    # --------------------------------------------------------
-    # Check admin
-    # --------------------------------------------------------
 
     if not admin_required():
 
@@ -387,12 +404,10 @@ def upload_questions(exam_id):
     try:
 
         exam_response = (
-            db.table("exams")
+            db
+            .table("exams")
             .select("*")
-            .eq(
-                "id",
-                exam_id
-            )
+            .eq("id", exam_id)
             .limit(1)
             .execute()
         )
@@ -410,19 +425,15 @@ def upload_questions(exam_id):
             repr(e)
         )
 
-        flash(
-            f"Could not load exam: {str(e)}",
-            "error"
-        )
-
-        return redirect(
-            url_for("admin_dashboard")
+        return (
+            "Database error while loading exam.",
+            500
         )
 
     if not exam:
 
         return (
-            "Exam not found",
+            "Exam not found.",
             404
         )
 
@@ -438,7 +449,7 @@ def upload_questions(exam_id):
         )
 
     # --------------------------------------------------------
-    # POST - Check file
+    # POST
     # --------------------------------------------------------
 
     if "file" not in request.files:
@@ -454,18 +465,7 @@ def upload_questions(exam_id):
 
     file = request.files["file"]
 
-    if not file:
-
-        flash(
-            "Invalid file.",
-            "error"
-        )
-
-        return redirect(
-            request.url
-        )
-
-    if not file.filename:
+    if not file or not file.filename:
 
         flash(
             "No file selected.",
@@ -476,16 +476,12 @@ def upload_questions(exam_id):
             request.url
         )
 
-    # --------------------------------------------------------
-    # Validate extension
-    # --------------------------------------------------------
-
     if not allowed_file(
         file.filename
     ):
 
         flash(
-            "Only Excel files (.xlsx and .xls) are allowed.",
+            "Only Excel files (.xlsx, .xls) are allowed.",
             "error"
         )
 
@@ -493,21 +489,8 @@ def upload_questions(exam_id):
             request.url
         )
 
-    # --------------------------------------------------------
-    # Secure filename
-    # --------------------------------------------------------
-
     filename = secure_filename(
         file.filename
-    )
-
-    # Prevent filename collision
-    timestamp = datetime.utcnow().strftime(
-        "%Y%m%d%H%M%S%f"
-    )
-
-    filename = (
-        f"{timestamp}_{filename}"
     )
 
     filepath = os.path.join(
@@ -518,20 +501,13 @@ def upload_questions(exam_id):
     try:
 
         # ----------------------------------------------------
-        # Save uploaded file
+        # Save Excel
         # ----------------------------------------------------
 
-        file.save(
-            filepath
-        )
-
-        print(
-            "Excel file saved:",
-            filepath
-        )
+        file.save(filepath)
 
         # ----------------------------------------------------
-        # Open Excel workbook
+        # Open Excel
         # ----------------------------------------------------
 
         workbook = openpyxl.load_workbook(
@@ -545,18 +521,7 @@ def upload_questions(exam_id):
         questions = []
 
         # ----------------------------------------------------
-        # Read rows
-        #
-        # Excel format:
-        #
-        # A = Question
-        # B = Option A
-        # C = Option B
-        # D = Option C
-        # E = Option D
-        # F = Correct Answer
-        #
-        # First row = header
+        # Read questions
         # ----------------------------------------------------
 
         for row in sheet.iter_rows(
@@ -570,7 +535,6 @@ def upload_questions(exam_id):
             if len(row) < 6:
                 continue
 
-            # Question
             if row[0] is None:
                 continue
 
@@ -580,10 +544,6 @@ def upload_questions(exam_id):
 
             if not question_text:
                 continue
-
-            # ------------------------------------------------
-            # Options
-            # ------------------------------------------------
 
             option_a = (
                 str(row[1]).strip()
@@ -609,10 +569,6 @@ def upload_questions(exam_id):
                 else ""
             )
 
-            # ------------------------------------------------
-            # Correct answer
-            # ------------------------------------------------
-
             correct_answer = (
                 str(row[5])
                 .strip()
@@ -628,21 +584,11 @@ def upload_questions(exam_id):
                 "D"
             }:
 
-                print(
-                    "Invalid answer found:",
-                    correct_answer
-                )
-
                 correct_answer = "A"
-
-            # ------------------------------------------------
-            # Question object
-            # ------------------------------------------------
 
             questions.append({
 
-                "exam_id":
-                    exam_id,
+                "exam_id": exam_id,
 
                 "question_text":
                     question_text,
@@ -662,15 +608,14 @@ def upload_questions(exam_id):
                 "correct_answer":
                     correct_answer,
 
-                "marks":
-                    1
+                "marks": 1
 
             })
 
         workbook.close()
 
         # ----------------------------------------------------
-        # Check questions
+        # Validate
         # ----------------------------------------------------
 
         if not questions:
@@ -684,17 +629,13 @@ def upload_questions(exam_id):
                 request.url
             )
 
-        print(
-            "Questions found:",
-            len(questions)
-        )
-
         # ----------------------------------------------------
-        # Insert questions
+        # Insert
         # ----------------------------------------------------
 
         response = (
-            db.table("questions")
+            db
+            .table("questions")
             .insert(questions)
             .execute()
         )
@@ -702,7 +643,7 @@ def upload_questions(exam_id):
         if not response.data:
 
             flash(
-                "Questions could not be inserted into database.",
+                "Questions could not be inserted.",
                 "error"
             )
 
@@ -710,19 +651,10 @@ def upload_questions(exam_id):
                 request.url
             )
 
-        print(
-            "Questions inserted:",
-            len(response.data)
-        )
-
         flash(
             f"{len(questions)} questions successfully uploaded!",
             "success"
         )
-
-        # ----------------------------------------------------
-        # Go to results
-        # ----------------------------------------------------
 
         return redirect(
             url_for(
@@ -733,13 +665,13 @@ def upload_questions(exam_id):
 
     except Exception as e:
 
-        print("========================================")
-        print("QUESTION UPLOAD ERROR")
-        print(repr(e))
-        print("========================================")
+        print(
+            "QUESTION UPLOAD ERROR:",
+            repr(e)
+        )
 
         flash(
-            f"Error processing Excel file: {str(e)}",
+            f"Error processing file: {str(e)}",
             "error"
         )
 
@@ -749,21 +681,11 @@ def upload_questions(exam_id):
 
     finally:
 
-        # ----------------------------------------------------
-        # Remove temporary file
-        # ----------------------------------------------------
-
         if os.path.exists(filepath):
 
             try:
 
-                os.remove(
-                    filepath
-                )
-
-                print(
-                    "Temporary file removed."
-                )
+                os.remove(filepath)
 
             except Exception as e:
 
@@ -788,21 +710,15 @@ def view_results(exam_id):
             url_for("admin_login")
         )
 
-    db = get_db()
-
     try:
 
-        # ----------------------------------------------------
-        # Get exam
-        # ----------------------------------------------------
+        db = get_db()
 
         exam_response = (
-            db.table("exams")
+            db
+            .table("exams")
             .select("*")
-            .eq(
-                "id",
-                exam_id
-            )
+            .eq("id", exam_id)
             .limit(1)
             .execute()
         )
@@ -820,17 +736,11 @@ def view_results(exam_id):
                 404
             )
 
-        # ----------------------------------------------------
-        # Get attempts
-        # ----------------------------------------------------
-
         attempt_response = (
-            db.table("student_attempts")
+            db
+            .table("student_attempts")
             .select("*")
-            .eq(
-                "exam_id",
-                exam_id
-            )
+            .eq("exam_id", exam_id)
             .in_(
                 "status",
                 [
@@ -852,22 +762,17 @@ def view_results(exam_id):
 
         results = []
 
-        # ----------------------------------------------------
-        # Get students
-        # ----------------------------------------------------
-
         for attempt in attempts:
 
             user_response = (
-                db.table("users")
+                db
+                .table("users")
                 .select(
                     "username,full_name"
                 )
                 .eq(
                     "id",
-                    attempt.get(
-                        "student_id"
-                    )
+                    attempt["student_id"]
                 )
                 .limit(1)
                 .execute()
@@ -879,21 +784,17 @@ def view_results(exam_id):
                 else {}
             )
 
-            result = dict(
-                attempt
+            result = dict(attempt)
+
+            result["username"] = user.get(
+                "username"
             )
 
-            result["username"] = (
-                user.get("username")
+            result["full_name"] = user.get(
+                "full_name"
             )
 
-            result["full_name"] = (
-                user.get("full_name")
-            )
-
-            results.append(
-                result
-            )
+            results.append(result)
 
         return render_template(
             "admin/view_results.html",
@@ -903,8 +804,10 @@ def view_results(exam_id):
 
     except Exception as e:
 
-        print("VIEW RESULTS ERROR:")
-        print(repr(e))
+        print(
+            "VIEW RESULTS ERROR:",
+            repr(e)
+        )
 
         return (
             f"Could not load results: {str(e)}",
@@ -927,21 +830,15 @@ def view_logs(attempt_id):
             url_for("admin_login")
         )
 
-    db = get_db()
-
     try:
 
-        # ----------------------------------------------------
-        # Attempt
-        # ----------------------------------------------------
+        db = get_db()
 
         attempt_response = (
-            db.table("student_attempts")
+            db
+            .table("student_attempts")
             .select("*")
-            .eq(
-                "id",
-                attempt_id
-            )
+            .eq("id", attempt_id)
             .limit(1)
             .execute()
         )
@@ -953,24 +850,17 @@ def view_logs(attempt_id):
                 404
             )
 
-        attempt = (
-            attempt_response.data[0]
-        )
-
-        # ----------------------------------------------------
-        # Student
-        # ----------------------------------------------------
+        attempt = attempt_response.data[0]
 
         user_response = (
-            db.table("users")
+            db
+            .table("users")
             .select(
                 "username,full_name"
             )
             .eq(
                 "id",
-                attempt.get(
-                    "student_id"
-                )
+                attempt["student_id"]
             )
             .limit(1)
             .execute()
@@ -982,18 +872,13 @@ def view_logs(attempt_id):
             else {}
         )
 
-        # ----------------------------------------------------
-        # Exam
-        # ----------------------------------------------------
-
         exam_response = (
-            db.table("exams")
+            db
+            .table("exams")
             .select("title")
             .eq(
                 "id",
-                attempt.get(
-                    "exam_id"
-                )
+                attempt["exam_id"]
             )
             .limit(1)
             .execute()
@@ -1005,24 +890,21 @@ def view_logs(attempt_id):
             else {}
         )
 
-        attempt["username"] = (
-            user.get("username")
+        attempt["username"] = user.get(
+            "username"
         )
 
-        attempt["full_name"] = (
-            user.get("full_name")
+        attempt["full_name"] = user.get(
+            "full_name"
         )
 
-        attempt["title"] = (
-            exam.get("title")
+        attempt["title"] = exam.get(
+            "title"
         )
-
-        # ----------------------------------------------------
-        # Monitoring logs
-        # ----------------------------------------------------
 
         logs_response = (
-            db.table("monitoring_logs")
+            db
+            .table("monitoring_logs")
             .select("*")
             .eq(
                 "attempt_id",
@@ -1040,12 +922,9 @@ def view_logs(attempt_id):
             or []
         )
 
-        # ----------------------------------------------------
-        # Report
-        # ----------------------------------------------------
-
         report_response = (
-            db.table("exam_reports")
+            db
+            .table("exam_reports")
             .select("*")
             .eq(
                 "attempt_id",
@@ -1064,10 +943,6 @@ def view_logs(attempt_id):
             if report_response.data
             else None
         )
-
-        # ----------------------------------------------------
-        # Time calculation
-        # ----------------------------------------------------
 
         start_time = None
         end_time = None
@@ -1111,10 +986,6 @@ def view_logs(attempt_id):
 
                     return None
 
-        # ----------------------------------------------------
-        # Logs available
-        # ----------------------------------------------------
-
         if logs:
 
             start_time = parse_time(
@@ -1129,31 +1000,9 @@ def view_logs(attempt_id):
                 )
             )
 
-            if (
-                start_time
-                and end_time
-            ):
+            if start_time and end_time:
 
                 try:
-
-                    # Handle timezone mismatch
-                    if (
-                        start_time.tzinfo
-                        and not end_time.tzinfo
-                    ):
-
-                        end_time = end_time.replace(
-                            tzinfo=start_time.tzinfo
-                        )
-
-                    elif (
-                        end_time.tzinfo
-                        and not start_time.tzinfo
-                    ):
-
-                        start_time = start_time.replace(
-                            tzinfo=end_time.tzinfo
-                        )
 
                     total_seconds = max(
                         0,
@@ -1170,12 +1019,10 @@ def view_logs(attempt_id):
                         1
                     )
 
-                except Exception as e:
+                except Exception:
 
-                    print(
-                        "TIME CALCULATION ERROR:",
-                        repr(e)
-                    )
+                    total_seconds = 0
+                    total_minutes = 0
 
             warning_logs = [
 
@@ -1197,33 +1044,25 @@ def view_logs(attempt_id):
 
         return render_template(
             "admin/view_logs.html",
-
             attempt=attempt,
-
             logs=logs,
-
             warning_logs=warning_logs,
-
             report=report,
-
             total_seconds=total_seconds,
-
             total_minutes=total_minutes,
-
             start_time=start_time,
-
             end_time=end_time
         )
 
     except Exception as e:
 
-        print("========================================")
-        print("VIEW LOGS ERROR")
-        print(repr(e))
-        print("========================================")
+        print(
+            "VIEW LOGS ERROR:",
+            repr(e)
+        )
 
         return (
-            f"Could not load monitoring logs: {str(e)}",
+            f"Could not load logs: {str(e)}",
             500
         )
 
@@ -1243,47 +1082,15 @@ def delete_exam(exam_id):
             url_for("admin_login")
         )
 
-    db = get_db()
-
     try:
 
-        # ----------------------------------------------------
-        # Check exam
-        # ----------------------------------------------------
-
-        exam_response = (
-            db.table("exams")
-            .select("id")
-            .eq(
-                "id",
-                exam_id
-            )
-            .limit(1)
-            .execute()
-        )
-
-        if not exam_response.data:
-
-            flash(
-                "Exam not found.",
-                "error"
-            )
-
-            return redirect(
-                url_for("admin_dashboard")
-            )
-
-        # ----------------------------------------------------
-        # Get attempts
-        # ----------------------------------------------------
+        db = get_db()
 
         attempt_response = (
-            db.table("student_attempts")
+            db
+            .table("student_attempts")
             .select("id")
-            .eq(
-                "exam_id",
-                exam_id
-            )
+            .eq("exam_id", exam_id)
             .execute()
         )
 
@@ -1293,23 +1100,15 @@ def delete_exam(exam_id):
         )
 
         attempt_ids = [
-
-            attempt.get("id")
-
+            attempt["id"]
             for attempt in attempts
-
-            if attempt.get("id") is not None
-
         ]
-
-        # ----------------------------------------------------
-        # Delete reports and logs
-        # ----------------------------------------------------
 
         for attempt_id in attempt_ids:
 
             (
-                db.table("exam_reports")
+                db
+                .table("exam_reports")
                 .delete()
                 .eq(
                     "attempt_id",
@@ -1319,7 +1118,8 @@ def delete_exam(exam_id):
             )
 
             (
-                db.table("monitoring_logs")
+                db
+                .table("monitoring_logs")
                 .delete()
                 .eq(
                     "attempt_id",
@@ -1328,12 +1128,9 @@ def delete_exam(exam_id):
                 .execute()
             )
 
-        # ----------------------------------------------------
-        # Delete attempts
-        # ----------------------------------------------------
-
         (
-            db.table("student_attempts")
+            db
+            .table("student_attempts")
             .delete()
             .eq(
                 "exam_id",
@@ -1342,12 +1139,9 @@ def delete_exam(exam_id):
             .execute()
         )
 
-        # ----------------------------------------------------
-        # Delete questions
-        # ----------------------------------------------------
-
         (
-            db.table("questions")
+            db
+            .table("questions")
             .delete()
             .eq(
                 "exam_id",
@@ -1356,12 +1150,9 @@ def delete_exam(exam_id):
             .execute()
         )
 
-        # ----------------------------------------------------
-        # Delete exam
-        # ----------------------------------------------------
-
         (
-            db.table("exams")
+            db
+            .table("exams")
             .delete()
             .eq(
                 "id",
@@ -1377,10 +1168,10 @@ def delete_exam(exam_id):
 
     except Exception as e:
 
-        print("========================================")
-        print("DELETE EXAM ERROR")
-        print(repr(e))
-        print("========================================")
+        print(
+            "DELETE EXAM ERROR:",
+            repr(e)
+        )
 
         flash(
             f"Could not delete exam: {str(e)}",
@@ -1407,16 +1198,13 @@ def export_monitoring(attempt_id):
             url_for("admin_login")
         )
 
-    db = get_db()
-
     try:
 
-        # ----------------------------------------------------
-        # Get monitoring logs
-        # ----------------------------------------------------
+        db = get_db()
 
         response = (
-            db.table("monitoring_logs")
+            db
+            .table("monitoring_logs")
             .select("*")
             .eq(
                 "attempt_id",
@@ -1434,49 +1222,25 @@ def export_monitoring(attempt_id):
             or []
         )
 
-        # ----------------------------------------------------
-        # Create workbook
-        # ----------------------------------------------------
-
         workbook = openpyxl.Workbook()
 
         sheet = workbook.active
 
         sheet.title = "Monitoring Logs"
 
-        # ----------------------------------------------------
-        # Headers
-        # ----------------------------------------------------
-
         headers = [
-
             "ID",
-
             "Attempt ID",
-
             "Event Type",
-
             "Face Detected",
-
             "Gaze Direction",
-
             "Head Pose",
-
             "Warning Issued",
-
             "Details",
-
             "Timestamp"
-
         ]
 
-        sheet.append(
-            headers
-        )
-
-        # ----------------------------------------------------
-        # Header style
-        # ----------------------------------------------------
+        sheet.append(headers)
 
         for cell in sheet[1]:
 
@@ -1484,17 +1248,11 @@ def export_monitoring(attempt_id):
                 bold=True
             )
 
-        # ----------------------------------------------------
-        # Add data
-        # ----------------------------------------------------
-
         for log in logs:
 
             sheet.append([
 
-                log.get(
-                    "id"
-                ),
+                log.get("id"),
 
                 log.get(
                     "attempt_id"
@@ -1530,79 +1288,32 @@ def export_monitoring(attempt_id):
 
             ])
 
-        # ----------------------------------------------------
-        # Column widths
-        # ----------------------------------------------------
-
-        widths = {
-
-            "A": 10,
-
-            "B": 15,
-
-            "C": 25,
-
-            "D": 15,
-
-            "E": 20,
-
-            "F": 20,
-
-            "G": 18,
-
-            "H": 50,
-
-            "I": 25
-
-        }
-
-        for column, width in widths.items():
-
-            sheet.column_dimensions[
-                column
-            ].width = width
-
-        # ----------------------------------------------------
-        # Temporary file
-        # ----------------------------------------------------
-
         filename = (
             f"/tmp/monitoring_attempt_"
             f"{attempt_id}.xlsx"
         )
 
-        workbook.save(
-            filename
-        )
-
-        # ----------------------------------------------------
-        # Send file
-        # ----------------------------------------------------
+        workbook.save(filename)
 
         return send_file(
-
             filename,
-
             as_attachment=True,
-
             download_name=(
                 f"monitoring_attempt_"
                 f"{attempt_id}.xlsx"
             ),
-
             mimetype=(
                 "application/vnd.openxmlformats-"
                 "officedocument.spreadsheetml.sheet"
             )
-
         )
 
     except Exception as e:
 
-        print("========================================")
-        print("EXPORT MONITORING ERROR")
-        print(repr(e))
-        print("========================================")
+        print(
+            "EXPORT ERROR:",
+            repr(e)
+        )
 
         return (
             f"Could not export monitoring logs: {str(e)}",
